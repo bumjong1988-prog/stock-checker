@@ -1,0 +1,10 @@
+{
+  "name": "stock-checker",
+  "version": "1.0.0",
+  "description": "셀러박스 재고 교차 비교 (무신사 + ABC마트 + eBay)",
+  "main": "api/check.js",
+  "dependencies": {
+    "cheerio": "^1.0.0-rc.12",
+    "node-fetch": "^2.7.0"
+  }
+}

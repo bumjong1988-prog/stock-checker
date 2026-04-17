@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stock Checker - 셀러박스 재고 교차 비교</title>
+<style>
+:root{--bg:#0a0a0a;--bg2:#141414;--bg3:#1c1c1c;--border:#2a2a2a;--text:#e4e4e4;--sub:#888;--orange:#ff6b35;--green:#00e676;--red:#ff3d5a;--yellow:#ffd600;--blue:#00c4ff}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Noto Sans KR','Segoe UI',sans-serif;padding:24px;max-width:1100px;margin:0 auto}
+h1{font-size:24px;font-weight:900;letter-spacing:.05em}
+h1 .accent{color:var(--orange)}
+.sub{color:var(--sub);font-size:12px;margin-top:4px}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;margin-top:20px}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:10px;font-weight:700;color:var(--sub);margin-bottom:5px;letter-spacing:.1em;text-transform:uppercase}
+.field input{width:100%;padding:10px 13px;background:var(--bg3);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;font-family:inherit;outline:none}
+.field input:focus{border-color:#444}
+.btn{background:var(--orange);color:#fff;border:0;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn:hover{filter:brightness(1.1)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.result{margin-top:24px}
+.site-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:12px}
+.site-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.site-name{font-size:13px;font-weight:700;letter-spacing:.05em}
+.badge{padding:3px 9px;border-radius:6px;font-size:10px;font-weight:700}
+.badge.ok{background:#0a3d22;color:var(--green)}
+.badge.bad{background:#3d0a13;color:var(--red)}
+.title{font-size:13px;color:var(--sub);margin-bottom:10px;line-height:1.4}
+.var-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.var{padding:5px 10px;border-radius:6px;font-size:11px;font-weight:600;background:var(--bg3);border:1px solid var(--border)}
+.var.ok{background:#0a3d22;color:var(--green);border-color:#155a32}
+.var.bad{background:#3d0a13;color:var(--red);border-color:#5a1520}
+.alert{background:#3d2a0a;border-left:3px solid var(--yellow);padding:10px 14px;border-radius:6px;font-size:13px;margin-bottom:8px;color:var(--yellow)}
+.debug{margin-top:12px;font-size:11px;color:#666;background:var(--bg);padding:10px;border-radius:6px;overflow-x:auto}
+.debug summary{cursor:pointer;color:var(--sub)}
+pre{font-family:'SF Mono','Consolas',monospace;font-size:10px;color:#888;margin-top:6px}
+</style>
+</head>
+<body>
+
+<h1>STOCK<span class="accent">CHECKER</span></h1>
+<div class="sub">소싱처 ↔ eBay 사이즈 재고 교차 비교 · 무신사, ABC마트, eBay</div>
+
+<div class="card">
+  <div class="field">
+    <label>eBay URL</label>
+    <input id="u-ebay" type="text" placeholder="https://www.ebay.com/itm/...">
+  </div>
+  <div class="field">
+    <label>무신사 URL</label>
+    <input id="u-musinsa" type="text" placeholder="https://www.musinsa.com/products/...">
+  </div>
+  <div class="field">
+    <label>ABC마트 URL</label>
+    <input id="u-abc" type="text" placeholder="https://grandstage.a-rt.com/...">
+  </div>
+  <button class="btn" id="run">🔍 재고 체크 실행</button>
+</div>
+
+<div id="result" class="result"></div>
+
+<script>
+// 미리 채워두기 (테스트 편의용)
+document.getElementById('u-ebay').value = 'https://www.ebay.com/itm/366323554022';
+document.getElementById('u-musinsa').value = 'https://www.musinsa.com/products/6130502';
+document.getElementById('u-abc').value = 'https://grandstage.a-rt.com/product/new?prdtNo=1020126067';
+
+document.getElementById('run').addEventListener('click', async () => {
+  const btn = document.getElementById('run');
+  const out = document.getElementById('result');
+  
+  const urls = {
+    ebay: document.getElementById('u-ebay').value.trim(),
+    musinsa: document.getElementById('u-musinsa').value.trim(),
+    abc: document.getElementById('u-abc').value.trim(),
+  };
+  
+  Object.keys(urls).forEach(k => { if (!urls[k]) delete urls[k]; });
+  
+  if (!Object.keys(urls).length) {
+    out.innerHTML = '<div style="color:var(--red);padding:16px">URL을 1개 이상 입력해주세요</div>';
+    return;
+  }
+  
+  btn.disabled = true;
+  btn.textContent = '⏳ 체크 중... (10~20초 소요)';
+  out.innerHTML = '';
+  
+  try {
+    const res = await fetch('/api/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ urls }),
+    });
+    const data = await res.json();
+    render(data);
+  } catch (e) {
+    out.innerHTML = '<div style="color:var(--red);padding:16px">에러: ' + e.message + '</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 재고 체크 실행';
+  }
+});
+
+function render(data) {
+  const out = document.getElementById('result');
+  let html = '';
+  
+  // 알림
+  if (data.alerts && data.alerts.length) {
+    html += '<h3 style="margin-bottom:10px;font-size:14px">⚠️ 교차 비교 알림</h3>';
+    data.alerts.forEach(a => {
+      html += '<div class="alert">' + a.message + '</div>';
+    });
+  } else {
+    html += '<div style="color:var(--sub);font-size:12px;padding:10px 0">교차 비교 알림: 없음</div>';
+  }
+  
+  // 사이트별 결과
+  (data.results || []).forEach(r => {
+    html += '<div class="site-card">';
+    html += '<div class="site-head">';
+    html += '<div class="site-name">' + (r.site || '?') + '</div>';
+    if (r.error) {
+      html += '<span class="badge bad">에러</span>';
+    } else {
+      html += '<span class="badge ' + (r.available ? 'ok' : 'bad') + '">' + (r.available ? '판매가능' : '품절') + '</span>';
+    }
+    html += '</div>';
+    
+    if (r.title) html += '<div class="title">' + escapeHtml(r.title) + '</div>';
+    if (r.error) html += '<div style="color:var(--red);font-size:12px">에러: ' + r.error + '</div>';
+    
+    if (r.variations && r.variations.length) {
+      html += '<div class="var-list">';
+      r.variations.forEach(v => {
+        html += '<span class="var ' + (v.available ? 'ok' : 'bad') + '">' + escapeHtml(v.label || '?') + '</span>';
+      });
+      html += '</div>';
+    }
+    
+    if (r.raw_debug) {
+      html += '<details class="debug"><summary>🔧 디버그 정보 (파서 개선용)</summary>';
+      html += '<pre>' + escapeHtml(JSON.stringify(r.raw_debug, null, 2)) + '</pre>';
+      html += '</details>';
+    }
+    
+    html += '</div>';
+  });
+  
+  html += '<div style="color:#444;font-size:10px;text-align:right;margin-top:10px">⏱ ' + data.elapsed_ms + 'ms</div>';
+  
+  out.innerHTML = html;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+</script>
+
+</body>
+</html>
