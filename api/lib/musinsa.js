@@ -1,21 +1,11 @@
 const cheerio = require('cheerio');
 const { fetchHtml } = require('./fetcher');
 
-/**
- * 무신사 상품 페이지 파싱
- * - SPA지만 Next.js 기반이라 __NEXT_DATA__ 인라인 JSON에 사이즈/재고 정보가 있을 가능성 높음
- * - 또는 별도 옵션 API를 호출해야 할 수도 있음
- */
 async function checkMusinsa(url) {
   const result = {
     site: '무신사',
-    url,
-    ok: false,
-    title: null,
-    available: null,
-    variations: [],
-    raw_debug: null,
-    error: null,
+    url, ok: false, title: null, available: null,
+    variations: [], raw_debug: null, error: null,
   };
 
   try {
@@ -27,71 +17,89 @@ async function checkMusinsa(url) {
     }
 
     const $ = cheerio.load(html);
-    
-    // Title (og:title이 가장 안정적)
     result.title = $('meta[property="og:title"]').attr('content')
                 || $('title').text().trim().slice(0, 200);
 
-    // 1) __NEXT_DATA__ 시도 (Next.js 기본 패턴)
-    let nextData = null;
+    // 사이즈 키워드 주변 컨텍스트
+    const sizeContexts = [];
+    const sizePattern = /\b(220|225|230|235|240|245|250|255|260|265|270)\b/g;
+    let m; let sizeCount = 0;
+    while ((m = sizePattern.exec(html)) !== null && sizeCount < 8) {
+      const pos = m.index;
+      sizeContexts.push({
+        size: m[0],
+        context: html.slice(Math.max(0, pos - 80), pos + 150).replace(/\s+/g, ' '),
+      });
+      sizeCount++;
+    }
+
+    // 품절 키워드 주변
+    const soldoutContexts = [];
+    ['일시품절', '품절', 'SOLD OUT', '재고없음', 'soldOut', 'outOfStock'].forEach(kw => {
+      let pos = 0; let cnt = 0;
+      while ((pos = html.indexOf(kw, pos)) !== -1 && cnt < 2) {
+        soldoutContexts.push({
+          keyword: kw,
+          context: html.slice(Math.max(0, pos - 100), pos + 200).replace(/\s+/g, ' '),
+        });
+        pos += kw.length; cnt++;
+      }
+    });
+
+    // __NEXT_DATA__ 깊이 탐색
+    let nextDataInfo = null;
     const nextScript = $('#__NEXT_DATA__').html();
     if (nextScript) {
-      try { nextData = JSON.parse(nextScript); } catch(e) {}
-    }
-
-    // 2) 다른 인라인 JSON 패턴들 시도
-    let optionInfo = null;
-    $('script').each((i, el) => {
-      const txt = $(el).html() || '';
-      // sizeOptions, optionList 같은 패턴
-      const m = txt.match(/"optionList"\s*:\s*(\[.+?\])/);
-      if (m && !optionInfo) {
-        try { optionInfo = JSON.parse(m[1]); } catch(e) {}
-      }
-    });
-
-    // 3) 사이즈 정보가 들어있을만한 element들 검색
-    const sizeButtons = [];
-    $('[class*="size"], [class*="Size"], [data-size]').each((i, el) => {
-      const text = $(el).text().trim();
-      const dataSize = $(el).attr('data-size');
-      const cls = $(el).attr('class') || '';
-      const isDisabled = $(el).attr('disabled') !== undefined 
-                      || /sold|out|disabled/i.test(cls);
-      if (text && text.length < 30) {
-        sizeButtons.push({ text, dataSize, disabled: isDisabled, cls: cls.slice(0,80) });
-      }
-    });
-
-    // 4) 품절/재고 키워드 검색
-    const isSoldOut = html.includes('일시품절') || html.includes('SOLD OUT') 
-                   || html.includes('재고 없음') || html.includes('품절');
-    result.available = !isSoldOut;
-
-    result.raw_debug = {
-      has_next_data: !!nextData,
-      next_data_keys: nextData ? Object.keys(nextData.props?.pageProps || {}).slice(0, 10) : null,
-      has_option_list: !!optionInfo,
-      option_list_count: optionInfo?.length || 0,
-      size_buttons_found: sizeButtons.length,
-      size_buttons_sample: sizeButtons.slice(0, 15),
-      contains_soldout_keyword: isSoldOut,
-      html_length: html.length,
-    };
-
-    // 5) 가능하면 실제 사이즈 추출
-    if (optionInfo && Array.isArray(optionInfo)) {
-      optionInfo.forEach(opt => {
-        result.variations.push({
-          label: opt.optionName || opt.name || JSON.stringify(opt).slice(0,50),
-          available: opt.outOfStock !== true && opt.soldOut !== true,
+      try {
+        const nextData = JSON.parse(nextScript);
+        const pageProps = nextData?.props?.pageProps || {};
+        nextDataInfo = {
+          page_props_keys: Object.keys(pageProps),
+          dehydrated_state_present: !!pageProps.dehydratedState,
+          // 모든 키의 값 미리보기
+          samples: {},
+        };
+        // 각 key의 값을 일부 미리보기
+        Object.keys(pageProps).slice(0, 15).forEach(k => {
+          const v = pageProps[k];
+          nextDataInfo.samples[k] = JSON.stringify(v).slice(0, 200);
         });
-      });
-    } else if (sizeButtons.length) {
-      sizeButtons.forEach(b => {
-        result.variations.push({ label: b.text, available: !b.disabled });
-      });
+      } catch(e) {
+        nextDataInfo = { parse_error: e.message };
+      }
     }
+
+    // Musinsa API 패턴: goods/{id}/options 같은 거 호출하는지 확인
+    const apiPaths = [];
+    const apiPattern = /["'](\/api\/[^"']+)["']/g;
+    let am; let apiCount = 0;
+    while ((am = apiPattern.exec(html)) !== null && apiCount < 10) {
+      apiPaths.push(am[1]);
+      apiCount++;
+    }
+
+    // size, option, variant 같은 키워드 등장 위치
+    const optionMentions = [];
+    ['"options"', '"optionList"', '"sizeList"', '"sizes"', '"variations"', '"sku"', 'optionInfo'].forEach(kw => {
+      let pos = html.indexOf(kw);
+      if (pos !== -1) {
+        optionMentions.push({
+          keyword: kw,
+          context: html.slice(Math.max(0, pos - 50), pos + 300).replace(/\s+/g, ' '),
+        });
+      }
+    });
+
+    result.available = !html.includes('일시품절') && !html.includes('SOLD OUT');
+    result.raw_debug = {
+      html_length: html.length,
+      title: result.title,
+      next_data_info: nextDataInfo,
+      api_paths: [...new Set(apiPaths)].slice(0, 10),
+      size_contexts: sizeContexts,
+      soldout_contexts: soldoutContexts,
+      option_mentions: optionMentions,
+    };
 
     result.ok = true;
   } catch (e) {
