@@ -12,7 +12,6 @@ async function checkEbay(url) {
     const { status, html } = await fetchHtml(url);
     if (status !== 200) {
       result.error = `HTTP ${status}`;
-      result.raw_debug = { html_preview: html.slice(0, 300) };
       return result;
     }
 
@@ -20,77 +19,55 @@ async function checkEbay(url) {
     result.title = $('h1.x-item-title__mainTitle span').first().text().trim()
                 || $('h1').first().text().trim().slice(0, 200);
 
-    const selects = [];
-    $('select').each((i, el) => {
-      const options = [];
-      $(el).find('option').each((j, opt) => {
-        options.push({
-          text: $(opt).text().trim(),
-          value: $(opt).attr('value'),
-          disabled: $(opt).attr('disabled') !== undefined,
-        });
-      });
-      selects.push({
-        name: $(el).attr('name') || '',
-        id: $(el).attr('id') || '',
-        options: options.slice(0, 20),
-      });
-    });
-
-    const ulOptions = [];
-    $('[class*="msku"], [class*="x-msku"], [data-componentid*="msku"], [class*="select-box"]').each((i, el) => {
+    // data-sku-value-name 속성으로 사이즈/옵션 추출
+    const skuOptions = [];
+    $('[data-sku-value-name]').each((i, el) => {
+      const name = $(el).attr('data-sku-value-name') || '';
       const cls = $(el).attr('class') || '';
-      const text = $(el).text().trim();
-      if (text && text.length < 200) ulOptions.push({ tag: el.tagName, cls: cls.slice(0, 100), text: text.slice(0, 100) });
+      const ariaDisabled = $(el).attr('aria-disabled') === 'true';
+      const parentCls = $(el).parent().attr('class') || '';
+      const grandCls = $(el).parent().parent().attr('class') || '';
+      const disabled = ariaDisabled
+                    || /disabled|out-of-stock|unavailable|sold-out/i.test(cls)
+                    || /disabled|out-of-stock|sold-out/i.test(parentCls)
+                    || /disabled|out-of-stock|sold-out/i.test(grandCls);
+      if (name) skuOptions.push({ name, disabled });
     });
 
-    const modelContexts = [];
-    ['KJ3969', 'KJ3970', 'HP7130'].forEach(model => {
-      let pos = 0; let count = 0;
-      while ((pos = html.indexOf(model, pos)) !== -1 && count < 3) {
-        modelContexts.push({
-          model,
-          context: html.slice(Math.max(0, pos - 100), pos + 200).replace(/\s+/g, ' '),
-        });
-        pos += model.length;
-        count++;
+    // 중복 제거
+    const seen = new Set();
+    const dedupedSkus = [];
+    skuOptions.forEach(s => {
+      const key = s.name + '|' + s.disabled;
+      if (!seen.has(s.name)) {
+        seen.add(s.name);
+        dedupedSkus.push(s);
       }
     });
 
-    const sizeContexts = [];
-    const sizePattern = /\b(220|225|230|235|240|245|250|255|260)\b/g;
-    let m; let sizeCount = 0;
-    while ((m = sizePattern.exec(html)) !== null && sizeCount < 5) {
-      const pos = m.index;
-      sizeContexts.push({
-        size: m[0],
-        context: html.slice(Math.max(0, pos - 80), pos + 150).replace(/\s+/g, ' '),
+    dedupedSkus.forEach(s => {
+      // 사이즈 숫자만 추출 (예: "(KOR) 220 / US(W) 5" → 220)
+      const sizeMatch = s.name.match(/\b(\d{3})\b/);
+      result.variations.push({
+        label: s.name,
+        size: sizeMatch ? sizeMatch[1] : null,
+        available: !s.disabled,
       });
-      sizeCount++;
-    }
-
-    const jsonScripts = [];
-    $('script').each((i, el) => {
-      const txt = $(el).html() || '';
-      if (txt.length > 100 && (txt.includes('variation') || txt.includes('msku') || txt.includes('KJ3'))) {
-        jsonScripts.push({
-          length: txt.length,
-          has_variation: txt.includes('variation'),
-          has_msku: txt.includes('msku'),
-          preview: txt.slice(0, 400).replace(/\s+/g, ' '),
-        });
-      }
     });
 
-    result.available = !html.includes('This listing has ended') && !html.includes('Sold out');
+    // 품번 추출
+    const metaDesc = $('meta[property="og:description"]').attr('content')
+                  || $('meta[name="description"]').attr('content') || '';
+    const modelPattern = /\b([A-Z]{2,3}\d{4,6})\b/g;
+    const models = [...new Set(metaDesc.match(modelPattern) || [])];
+
+    result.available = !html.includes('This listing has ended')
+                    && !html.includes('Sold out')
+                    && result.variations.some(v => v.available);
+
     result.raw_debug = {
-      html_length: html.length,
-      selects_count: selects.length,
-      selects,
-      ul_options_sample: ulOptions.slice(0, 10),
-      model_contexts: modelContexts,
-      size_contexts: sizeContexts,
-      json_scripts: jsonScripts.slice(0, 3),
+      sku_options_count: dedupedSkus.length,
+      models_found: models,
     };
 
     result.ok = true;
